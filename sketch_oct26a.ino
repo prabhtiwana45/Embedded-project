@@ -75,7 +75,7 @@ void sendAlert() {
   Serial.println("Sending SMS...");
   gsmSerial.println("AT+CMGF=1");
   delay(1000);
-  gsmSerial.print("AT+CMGS=+919915767225\r"); // replace with your number
+  gsmSerial.print("AT+CMGS=+919915767225\r"); 
   delay(1000);
   gsmSerial.print(msg);
   delay(500);
