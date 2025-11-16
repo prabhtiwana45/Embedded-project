@@ -1,85 +1,87 @@
-#include <Arduino_LSM6DS3.h>  // Built-in accelerometer
-#include <Wire.h>
-#include <Adafruit_GPS.h>
+#include <Arduino_LSM6DS3.h>   // Built-in IMU
+#include <TinyGPS++.h>         // GPS library
 
-Adafruit_GPS GPS(&Wire);
-#define gsmSerial Serial1
+TinyGPSPlus gps;
 
-const float crashThreshold = 2.5; // g-force threshold (~2.5g)
-bool crashDetected = false;
-const unsigned long smsInterval = 60000; // optional SMS interval
-unsigned long lastSmsTime = 0;
+#define GPS_PORT Serial2       // GPS module connected to Serial2
+HardwareSerial &sim800 = Serial1;   // SIM800L connected to Serial1
+
+float x, y, z;
+bool sent = false;
 
 void setup() {
   Serial.begin(9600);
-  gsmSerial.begin(9600);
-  Wire.begin();
+  sim800.begin(9600);      // GSM
+  GPS_PORT.begin(9600);    // GPS
 
+  // Start IMU (Gyroscope & Accelerometer)
   if (!IMU.begin()) {
-    Serial.println("Failed to initialize IMU!");
+    Serial.println("IMU NOT FOUND!");
     while (1);
   }
-  Serial.println("IMU ready.");
 
-  // GPS init
-  GPS.begin(9600);
-  GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCGGA);
-  GPS.sendCommand(PMTK_SET_NMEA_UPDATE_1HZ);
+  delay(2000);
+  Serial.println("Initializing SIM800L...");
 
-  // GSM init
-  gsmSerial.println("AT");
+  // Basic GSM initialization
+  sim800.println("AT");
   delay(1000);
-  gsmSerial.println("AT+CMGF=1");
-  delay(1000);
-  gsmSerial.println("AT+CNMI=1,2,0,0,0"); 
-  delay(1000);
-  Serial.println("GSM ready.");
+  sim800.println("AT+CMGF=1");   // TEXT mode
+
+  Serial.println("Setup done.");
 }
 
 void loop() {
-  // Read GPS
-  GPS.read();
-
-  // Read accelerometer
-  float x, y, z;
-  IMU.readAcceleration(x, y, z);
-  float magnitude = sqrt(x*x + y*y + z*z); // total g-force
-
-  if (magnitude > crashThreshold && !crashDetected) {
-    crashDetected = true;
-    Serial.println("Crash detected! Sending SMS...");
-    sendAlert();
-    crashDetected = false;
+  // Read GPS incoming data
+  while (GPS_PORT.available()) {
+    gps.encode(GPS_PORT.read());
   }
 
-  // Optional: periodic SMS even without crash
-  if (millis() - lastSmsTime > smsInterval) {
-    lastSmsTime = millis();
-    sendAlert();
-  }
+  // Accident (fall) detection using gyroscope
+  if (IMU.gyroscopeAvailable()) {
+    IMU.readGyroscope(x, y, z);
 
-  delay(100);
+    // Threshold accident detection
+    if (abs(x) > 120 || abs(y) > 120 || abs(z) > 120) {
+      if (!sent) {
+        Serial.println("ACCIDENT DETECTED!");
+        sendLocationSMS("+919915767225");
+        sent = true;    // Prevents repeat messages
+      }
+    } else {
+      sent = false;     // Reset when stable
+    }
+  }
 }
 
-void sendAlert() {
-  String msg;
-  if (GPS.fix) {
-    msg = "Crash detected! Location: https://maps.google.com/?q=";
-    msg += String(GPS.latitude, 6);
-    msg += ",";
-    msg += String(GPS.longitude, 6);
-  } else {
-    msg = "Crash detected! GPS not fixed yet.";
+void sendLocationSMS(String number) {
+
+  // Wait for GPS fix
+  while (!gps.location.isValid()) {
+    Serial.println("Waiting for GPS fix...");
+    while (GPS_PORT.available()) gps.encode(GPS_PORT.read());
+    delay(1000);
   }
 
-  Serial.println("Sending SMS...");
-  gsmSerial.println("AT+CMGF=1");
+  float lat = gps.location.lat();
+  float lon = gps.location.lng();
+
+  // Google Maps link
+  String link = "https://maps.google.com/?q=" + String(lat, 6) + "," + String(lon, 6);
+
+  // START SMS
+  sim800.println("AT+CMGS=\"" + number + "\"");
   delay(1000);
-  gsmSerial.print("AT+CMGS=+919915767225\r"); 
-  delay(1000);
-  gsmSerial.print(msg);
-  delay(500);
-  gsmSerial.write(26); // Ctrl+Z
-  delay(5000);
-  Serial.println("SMS sent!");
+
+  // *** MESSAGE FORMAT LIKE YOUR PHOTO ***
+  sim800.println("⚠️ CRASH DETECTED!");
+  sim800.println("Smart Helmet Alert");
+  sim800.println("Location:");
+  sim800.println(link);
+  sim800.println("Please check immediately!");
+
+  sim800.write(26);   // CTRL+Z = send SMS
+  delay(2000);
+
+  Serial.println("SMS SENT!");
 }
